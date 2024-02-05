@@ -1,7 +1,7 @@
 from ast import Tuple
 import venv
 import warnings
-from attr import dataclass
+# from attr import dataclass
 import torch
 from types import FunctionType
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Set, Type, TypeVar, Union
@@ -50,7 +50,7 @@ def register_model(name: Optional[str] = None) -> Callable[[Callable[..., M]], C
 
 
 
-@dataclass
+# @dataclass
 class Weights:
     """
     This class is used to group important attributes associated with the pre-trained weights.
