@@ -12,6 +12,7 @@ import torch.nn as nn
 import numpy as np
 from torch.optim.lr_scheduler import LambdaLR,ReduceLROnPlateau
 from torchvision import datasets
+from sklearn.neighbors import NearestNeighbors
 from sklearn.model_selection import train_test_split
 import torch.nn.functional as F
 from torch.nn import TripletMarginLoss
@@ -66,41 +67,12 @@ print(model)
 
 # In[4]:
 
-
-test_img_001_0 = Image.open('./data_cropped/001/001_0.bmp')
-test_img_001_1 = Image.open('./data_cropped/001/001_1.bmp')
-test_img_001_2 = Image.open('./data_cropped/001/001_2.bmp')
-test_img_003_3 = Image.open('./data_cropped/003/003_3.bmp')
-test_img_007_3 = Image.open('./data_cropped/007/007_3.bmp')
-test_img_003_1 = Image.open('./data_cropped/003/003_1.bmp')
-test_img_003_2 = Image.open('./data_cropped/003/003_2.bmp')
-
-lables = ["001_0", "001_1", "001_2", "003_3", "007_3", "003_1", "003_2"]
-
 transforming = transforms.Compose([
             transforms.Resize((224, 224)),
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[
                                  0.229, 0.224, 0.225])
         ])
-
-aligned = []
-aligned.append(transforming(test_img_001_0))
-aligned.append(transforming(test_img_001_1))
-aligned.append(transforming(test_img_001_2))
-aligned.append(transforming(test_img_003_3))
-aligned.append(transforming(test_img_007_3))
-aligned.append(transforming(test_img_003_1))
-aligned.append(transforming(test_img_003_2))
-
-model.eval()
-aligned = torch.stack(aligned).to('cuda')
-emdeddings = model(aligned).cpu().detach()
-
-print(emdeddings[0])
-dists = [[(e1 - e2).norm().item() for e2 in emdeddings] for e1 in emdeddings]
-# pd.DataFrame(dists, columns=lables, index=lables)
-
 
 
 
@@ -147,7 +119,7 @@ class TripletFaceDataset(Dataset):
         positive_img = transform(positive_img)
         negative_img = transform(negative_img)
 
-        return anchor_img, positive_img, negative_img
+        return (anchor_img, positive_img, negative_img),(anchor_person, positive_person, negative_person)
 
     def __len__(self):
         return len(self.persons) * 5  # 假设每个人有5张图片
@@ -157,21 +129,17 @@ class TripletFaceDataset(Dataset):
 
 # 切割数据集八二分
 
-batch_size = 64
+batch_size = 32
 epochs = 20
 workers = 0 if os.name == 'nt' else 8
 
 
 dataset = datasets.ImageFolder('./data_cropped', transform=transforming)
 labels = os.listdir('./data_cropped')
-print(labels)
+
 random.shuffle(labels)
 train_idx, test_idx = train_test_split(
     labels, test_size=0.2, random_state=42)
-
-print(train_idx)
-print('-------')
-print(test_idx)
 
 train_dataset = TripletFaceDataset(
     image_folder='./data_cropped', persons=train_idx, transform=transforming
@@ -199,7 +167,7 @@ optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
 #     return (1-epoch/max_epoch)**0.9 ##多项式衰减
 
 # scheduler = LambdaLR(optimizer, lr_lambda=lambda_rule)
-scheduler = ReduceLROnPlateau(optimizer, mode='max', factor=0.1, patience=10, verbose=True)
+scheduler = ReduceLROnPlateau(optimizer, mode='max', factor=0.1, patience=10, )
 
 
 # 定制参考嵌入向量
@@ -232,8 +200,8 @@ for label in labels:
 # In[ ]:
 
 
-writer = SummaryWriter('runs/triplet_loss_experiment')
-writer.iteration, writer.interval = 0, 10
+# writer = SummaryWriter('runs/triplet_loss_experiment')
+# writer.iteration, writer.interval = 0, 10
 
 print('Start Training')
 print('-'*10)
@@ -246,7 +214,7 @@ for epoch in range(epochs):
     model.train()
     running_loss = 0.0
     for i, data in enumerate(train_loader, 0):
-        anchor, positive, negative = data
+        anchor, positive, negative = data[0]
         anchor, positive, negative = anchor.to('cuda'), positive.to('cuda'), negative.to('cuda')
         optimizer.zero_grad()
         anchor_out = model(anchor)
@@ -256,11 +224,11 @@ for epoch in range(epochs):
         loss_val.backward()
         optimizer.step()
         running_loss += loss_val.item()
-        writer.iteration += 1
+        # writer.iteration += 1
         print(f"the loss is {running_loss}")
         if i % 10 == 9:
-            writer.add_scalar('loss', running_loss / 10,
-                              writer.iteration)
+            # writer.add_scalar('loss', running_loss / 10,
+            #                   writer.iteration)
             running_loss = 0.0
     print('Epoch{} finished'.format(epoch))
     
@@ -271,46 +239,40 @@ for epoch in range(epochs):
         # 用标签来评估模型
         total = 0
         correct = 0
+        reference_embeddings_np = np.vstack([embedding.cpu().numpy() for embedding in reference_embeddings])
+        near_nn = NearestNeighbors(n_neighbors=1, algorithm='auto',metric='euclidean',).fit(reference_embeddings_np)
         # use labels to evaluate the model
         for i,data in enumerate(test_loader,0):
-                anchor, _, _ = data
+                anchor, _, _ = data[0]
+                anchor_label, _, _ = data[1]
                 batch_sizes = anchor.size(0)
                 total += batch_sizes
                 anchor = anchor.to('cuda')
-                # 找到anchor 的标签
-                anchor_label = os.path.basename(test_loader.dataset.persons[i])
                 # print(anchor.shape)
-                anchor_out = model(anchor) 
-                         
-                for j in range(batch_sizes):
-                    anchor_embedding = anchor_out[j].unsqueeze(0)
-                    mindist = torch.full((1,), float('inf')).to('cuda')
-                    minidx = -1
-                    for i, reference_embedding in enumerate(reference_embeddings):
-                        dist = F.pairwise_distance(anchor_embedding, reference_embedding, p=2)
-                        if dist < mindist:
-                            mindist = dist
-                            minidx = i
-                                    
-                                    
-                    predict_label = reference_labels[minidx]
-                    if predict_label == anchor_label:
-                        correct += 1
-                    
+                anchor_out = model(anchor).cpu().detach().numpy()
                 
-                    
+                distances, indices = near_nn.kneighbors(anchor_out)
+                indices = indices.reshape(-1)
+                
+                for j in range(batch_sizes):
+                    if reference_labels[indices[j]] == anchor_label[j]:
+                        correct += 1
         acc = correct / total
-        print('Accuracy on test set: {:.4f}'.format(acc))
-        writer.add_scalar('acc', acc, epoch)
+        print('acc:', acc)
+        print('correct:', correct)
+        
+        # writer.add_scalar('acc', acc, epoch)
         
         
         # 用scheduler来更新学习率
         scheduler.step(acc)
+        current_lr = scheduler.get_last_lr()
+        print("Current learning rate: ", current_lr)
         print('lr:', optimizer.param_groups[0]['lr'])
         
 print('Finished Training')
 
-writer.close()
+# writer.close()
 
         
                     
