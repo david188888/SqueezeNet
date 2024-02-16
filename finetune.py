@@ -3,8 +3,6 @@
 
 # ### 导入相关的包
 
-# In[2]:
-
 
 from torch.utils.data import Dataset, DataLoader
 import torch
@@ -27,7 +25,7 @@ import random
 
 # ### 部署模型，修改分类层
 
-# In[3]:
+
 
 
 # 使用预训练参数
@@ -65,7 +63,7 @@ for param in model.features[-1:].parameters():
 print(model)
 
 
-# In[4]:
+
 
 transforming = transforms.Compose([
             transforms.Resize((224, 224)),
@@ -78,7 +76,7 @@ transforming = transforms.Compose([
 
 # ### 读取并且定制数据集
 
-# In[5]:
+
 
 
 loss = TripletMarginLoss(margin=0.2, p=2)
@@ -130,7 +128,7 @@ class TripletFaceDataset(Dataset):
 # 切割数据集八二分
 
 batch_size = 32
-epochs = 20
+epochs = 300
 workers = 0 if os.name == 'nt' else 8
 
 
@@ -156,18 +154,18 @@ test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num
 
 # ### 开始模型训练
 
-# In[6]:
+
 
 
 # 定制优化器
-optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
 
 # def lambda_rule(epoch,max_epoch):
 #     max_epoch = 20
 #     return (1-epoch/max_epoch)**0.9 ##多项式衰减
 
 # scheduler = LambdaLR(optimizer, lr_lambda=lambda_rule)
-scheduler = ReduceLROnPlateau(optimizer, mode='max', factor=0.1, patience=10, )
+scheduler = ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=50)
 
 
 # 定制参考嵌入向量
@@ -176,19 +174,18 @@ reference_labels = []
 model.eval()
 # 遍历数据集每个文件夹，每个文件夹embeddings计算平均值，放进reference_embeddings,对应的标签放进reference_labels
 for label in labels:
-    label_embeddings = []
-    for img_path in os.listdir(os.path.join('./data_cropped', label)):
-        img = Image.open(os.path.join('./data_cropped', label, img_path))
-        img = transforming(img).to('cuda')
-        img = img.unsqueeze(0)
+    img_path = os.listdir(os.path.join('./data_cropped', label))
+    if img_path:
+        first_img = img_path[0]
+        img = Image.open(os.path.join('./data_cropped', label, first_img))
+        img = transforming(img).unsqueeze(0).to('cuda')
         with torch.no_grad():
             embedding = model(img).cpu().detach().numpy()
-            label_embeddings.append(embedding)    
-    label_embeddings = np.array(label_embeddings)
-    np_mean = np.mean(label_embeddings, axis=0)
-    tensor_mean = torch.from_numpy(np_mean).to('cuda')
-    reference_embeddings.append(tensor_mean)
-    reference_labels.append(label)
+            temsor_embedding = torch.from_numpy(embedding).to('cuda')
+            
+        reference_embeddings.append(temsor_embedding)
+        reference_labels.append(label)
+            
 
 
 # print(reference_embeddings)
@@ -255,8 +252,11 @@ for epoch in range(epochs):
                 indices = indices.reshape(-1)
                 
                 for j in range(batch_sizes):
+                    print('anchor_label:', anchor_label[j])
+                    print('reference_labels[indices[j]]:', reference_labels[indices[j]])
                     if reference_labels[indices[j]] == anchor_label[j]:
                         correct += 1
+                        
         acc = correct / total
         print('acc:', acc)
         print('correct:', correct)
@@ -282,4 +282,3 @@ print('Finished Training')
             
             
             
-
